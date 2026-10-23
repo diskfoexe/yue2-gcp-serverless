@@ -7,4 +7,3 @@ huggingface-hub
 soundfile
 tiktoken
 requests
-git+https://github.com/m-a-p/YuE.git
