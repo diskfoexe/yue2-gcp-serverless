@@ -10,9 +10,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ביטול הדרישה לאימות ב-git clone והעתקת הקוד לתיקיית העבודה
+# שכפול הריפו והתקנה רשמית של החבילה בתוך פייתון
 RUN GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://github.com/multimodal-art-projection/YuE.git /tmp/YuE && \
-    cp -r /tmp/YuE/* /app/ && \
+    cd /tmp/YuE && \
+    pip install --no-cache-dir . && \
     rm -rf /tmp/YuE
 
 COPY . .
