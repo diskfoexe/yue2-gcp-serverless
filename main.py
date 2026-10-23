@@ -95,6 +95,7 @@ def get_pipeline():
     global pipe
     if pipe is None:
         _ensure_yue2()
+        import torch
         from yue2 import YuE2Pipeline
         print("Loading YuE2-3B pipeline (first run downloads weights)...")
         pipe = YuE2Pipeline.from_pretrained(REPO, device="cuda" if torch.cuda.is_available() else "cpu")
