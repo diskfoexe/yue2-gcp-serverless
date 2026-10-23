@@ -7,13 +7,13 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# משכפלים את הריפו ומעתיקים את כל התוכן שלו ישר לתוך /app
-RUN git clone https://github.com/m-a-p/YuE.git /tmp/YuE && \
-    cp -r /tmp/YuE/* /app/ && \
-    rm -rf /tmp/YuE
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# ביטול הדרישה לאימות ב-git clone והעתקת הקוד לתיקיית העבודה
+RUN GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://github.com/multimodal-art-projection/YuE.git /tmp/YuE && \
+    cp -r /tmp/YuE/* /app/ && \
+    rm -rf /tmp/YuE
 
 COPY . .
 
