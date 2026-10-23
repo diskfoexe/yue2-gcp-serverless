@@ -8,6 +8,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+import requests
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -16,7 +18,8 @@ app = FastAPI()
 
 REPO = "m-a-p/YuE2-3B"
 BUCKET_OWNER = "directedbykobyperez"
-MY_BUCKET = os.environ.get("MY_BUCKET", "YuE2-mysongs-private")
+MY_BUCKET = os.environ.get("MY_BUCKET", "YuE2-songs-private")
+STORAGE_REPO = MY_BUCKET if "/" in MY_BUCKET else f"{BUCKET_OWNER}/{MY_BUCKET}"
 OUT = "/tmp/yue2_out"
 os.makedirs(OUT, exist_ok=True)
 
@@ -163,26 +166,35 @@ def get_duration_seconds(audio_path):
 
 
 def _upload_to_my_bucket(wav_path, meta_dict, song_id, abc_path=None, midi_path=None):
-    """Silently upload songs/<id>/<id>.wav (+ .abc/.mid) + meta.json to the private bucket. Never raises."""
+    """Upload songs/<id>/<id>.wav (+ .abc/.mid) + meta.json to the private dataset repo. Never raises."""
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     if not token:
+        print("[storage] no HF_TOKEN set; skipping upload")
         return
     try:
-        from huggingface_hub import HfFileSystem
-        fs = HfFileSystem(token=token)
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        api.create_repo(STORAGE_REPO, repo_type="dataset", private=True, exist_ok=True)
         meta_local = os.path.join(OUT, f"{song_id}_meta.json")
         with open(meta_local, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f, ensure_ascii=False, indent=2)
-        base = f"buckets/{BUCKET_OWNER}/{MY_BUCKET}/songs/{song_id}"
-        fs.put_file(wav_path, f"{base}/{song_id}.wav")
+        base = f"songs/{song_id}"
+        files = [(wav_path, f"{base}/{song_id}.wav")]
         if abc_path and os.path.exists(abc_path):
-            fs.put_file(abc_path, f"{base}/{song_id}.abc")
+            files.append((abc_path, f"{base}/{song_id}.abc"))
         if midi_path and os.path.exists(midi_path):
-            fs.put_file(midi_path, f"{base}/{song_id}.mid")
-        fs.put_file(meta_local, f"{base}/meta.json")
-        print(f"[my-bucket] uploaded {song_id}")
+            files.append((midi_path, f"{base}/{song_id}.mid"))
+        files.append((meta_local, f"{base}/meta.json"))
+        for local, remote in files:
+            api.upload_file(
+                path_or_fileobj=local,
+                path_in_repo=remote,
+                repo_id=STORAGE_REPO,
+                repo_type="dataset",
+            )
+        print(f"[storage] uploaded {song_id} to {STORAGE_REPO}")
     except Exception as e:
-        print(f"[my-bucket] upload failed: {e}")
+        print(f"[storage] upload failed: {e!r}")
 
 
 MEDIA_TYPES = {".wav": "audio/wav", ".abc": "text/plain", ".mid": "audio/midi", ".json": "application/json"}
@@ -195,24 +207,30 @@ def api_base(request: Request) -> str:
     return f"{proto}://{host}"
 
 
-def stream_from_bucket(song_id: str, filename: str):
+def _open_storage_stream(song_id: str, filename: str):
+    """Resolve and validate the download BEFORE any StreamingResponse is created.
+    Raises HTTPException (404) up front so failures never return an empty HTTP 200.
+    Returns an open requests.Response ready for iter_content()."""
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     if not token:
         raise HTTPException(status_code=404, detail="Not found")
-    from huggingface_hub import HfFileSystem
-    fs = HfFileSystem(token=token)
-    path = f"buckets/{BUCKET_OWNER}/{MY_BUCKET}/songs/{song_id}/{filename}"
-    if not fs.exists(path):
+    url = f"https://huggingface.co/datasets/{STORAGE_REPO}/resolve/main/songs/{song_id}/{filename}"
+    auth_headers = {"Authorization": f"Bearer {token}", "User-Agent": "yue2-api/1.0"}
+    r = requests.get(url, headers=auth_headers, allow_redirects=False, stream=True, timeout=30)
+    if r.status_code == 200:
+        return r
+    if r.status_code not in (302, 303, 307, 308):
+        r.close()
         raise HTTPException(status_code=404, detail="Not found")
-    fh = fs.open(path, "rb")
-    try:
-        while True:
-            chunk = fh.read(1024 * 1024)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        fh.close()
+    location = r.headers.get("Location")
+    r.close()
+    if not location:
+        raise HTTPException(status_code=404, detail="Not found")
+    r2 = requests.get(location, headers={"User-Agent": "yue2-api/1.0"}, stream=True, timeout=(30, 60))
+    if r2.status_code != 200:
+        r2.close()
+        raise HTTPException(status_code=404, detail="Not found")
+    return r2
 
 
 @app.get("/download/{song_id}/{filename}")
@@ -222,11 +240,13 @@ def download_get(song_id: str, filename: str):
     ext = os.path.splitext(filename)[1]
     if ext not in ALLOWED_EXT:
         raise HTTPException(status_code=404, detail="Not found")
-    return StreamingResponse(
-        stream_from_bucket(song_id, filename),
-        media_type=MEDIA_TYPES[ext],
-        headers={"Cache-Control": "no-store"},
-    )
+    resp = _open_storage_stream(song_id, filename)
+    headers = {"Cache-Control": "no-store"}
+    content_length = resp.headers.get("content-length")
+    if content_length:
+        headers["Content-Length"] = content_length
+    media_type = resp.headers.get("content-type") or MEDIA_TYPES[ext]
+    return StreamingResponse(resp.iter_content(chunk_size=1024 * 1024), media_type=media_type, headers=headers)
 
 
 def bucket_url(request, song_id, filename):
