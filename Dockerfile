@@ -7,10 +7,10 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# הורדה ידנית של הריפוזיטורי של YuE והתקנה מקומית שלו
+# משכפלים את הריפו ומעתיקים את כל התוכן שלו ישר לתוך /app
 RUN git clone https://github.com/m-a-p/YuE.git /tmp/YuE && \
-    cd /tmp/YuE && \
-    pip install --no-cache-dir -e .
+    cp -r /tmp/YuE/* /app/ && \
+    rm -rf /tmp/YuE
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
