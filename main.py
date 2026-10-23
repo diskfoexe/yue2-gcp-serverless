@@ -8,13 +8,15 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 app = FastAPI()
 
 REPO = "m-a-p/YuE2-3B"
-MY_BUCKET = "directedbykobyperez/YuE2-mysongs-private"
+BUCKET_OWNER = "directedbykobyperez"
+MY_BUCKET = os.environ.get("MY_BUCKET", "YuE2-mysongs-private")
 OUT = "/tmp/yue2_out"
 os.makedirs(OUT, exist_ok=True)
 
@@ -170,7 +172,7 @@ def _upload_to_my_bucket(wav_path, meta_dict, song_id, abc_path=None, midi_path=
         meta_local = os.path.join(OUT, f"{song_id}_meta.json")
         with open(meta_local, "w", encoding="utf-8") as f:
             json.dump(meta_dict, f, ensure_ascii=False, indent=2)
-        base = f"buckets/{MY_BUCKET}/songs/{song_id}"
+        base = f"buckets/{BUCKET_OWNER}/{MY_BUCKET}/songs/{song_id}"
         fs.put_file(wav_path, f"{base}/{song_id}.wav")
         if abc_path and os.path.exists(abc_path):
             fs.put_file(abc_path, f"{base}/{song_id}.abc")
@@ -182,12 +184,56 @@ def _upload_to_my_bucket(wav_path, meta_dict, song_id, abc_path=None, midi_path=
         print(f"[my-bucket] upload failed: {e}")
 
 
-def bucket_url(song_id, filename):
-    return f"https://huggingface.co/buckets/{MY_BUCKET}/resolve/main/songs/{song_id}/{filename}"
+MEDIA_TYPES = {".wav": "audio/wav", ".abc": "text/plain", ".mid": "audio/midi", ".json": "application/json"}
+ALLOWED_EXT = set(MEDIA_TYPES)
+
+
+def api_base(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("host", request.url.netloc)
+    return f"{proto}://{host}"
+
+
+def stream_from_bucket(song_id: str, filename: str):
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    if not token:
+        raise HTTPException(status_code=404, detail="Not found")
+    from huggingface_hub import HfFileSystem
+    fs = HfFileSystem(token=token)
+    path = f"buckets/{BUCKET_OWNER}/{MY_BUCKET}/songs/{song_id}/{filename}"
+    if not fs.exists(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    fh = fs.open(path, "rb")
+    try:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        fh.close()
+
+
+@app.get("/download/{song_id}/{filename}")
+def download_get(song_id: str, filename: str):
+    if not song_id or not filename or "/" in song_id or "/" in filename or song_id.startswith(".") or filename.startswith("."):
+        raise HTTPException(status_code=404, detail="Not found")
+    ext = os.path.splitext(filename)[1]
+    if ext not in ALLOWED_EXT:
+        raise HTTPException(status_code=404, detail="Not found")
+    return StreamingResponse(
+        stream_from_bucket(song_id, filename),
+        media_type=MEDIA_TYPES[ext],
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def bucket_url(request, song_id, filename):
+    return f"{api_base(request)}/download/{song_id}/{filename}"
 
 
 @app.post("/")
-def generate_song(payload: GenerationRequest):
+def generate_song(payload: GenerationRequest, request: Request):
     try:
         import torch  # noqa: F401
     except Exception:
@@ -257,12 +303,12 @@ def generate_song(payload: GenerationRequest):
         }
         _upload_to_my_bucket(wav_path, meta, song_id, abc_path=abc_path, midi_path=midi_path)
 
-        links = {"wav": bucket_url(song_id, f"{song_id}.wav")}
+        links = {"wav": bucket_url(request, song_id, f"{song_id}.wav")}
         if abc_path and os.path.exists(abc_path):
-            links["abc"] = bucket_url(song_id, f"{song_id}.abc")
+            links["abc"] = bucket_url(request, song_id, f"{song_id}.abc")
         if midi_path and os.path.exists(midi_path):
-            links["mid"] = bucket_url(song_id, f"{song_id}.mid")
-        links["meta"] = bucket_url(song_id, "meta.json")
+            links["mid"] = bucket_url(request, song_id, f"{song_id}.mid")
+        links["meta"] = bucket_url(request, song_id, "meta.json")
 
         return {
             "status": "success",
