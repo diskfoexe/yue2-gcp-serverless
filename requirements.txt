@@ -1,9 +1,2 @@
 fastapi
 uvicorn
-torch
-torchaudio
-transformers>=4.40.0
-huggingface-hub
-soundfile
-tiktoken
-requests

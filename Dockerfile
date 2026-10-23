@@ -1,21 +1,18 @@
-FROM pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y \
-    git \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# שכפול הריפו והתקנה רשמית של החבילה בתוך פייתון
-RUN GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://github.com/multimodal-art-projection/YuE.git /tmp/YuE && \
-    cd /tmp/YuE && \
-    pip install --no-cache-dir . && \
-    rm -rf /tmp/YuE
+COPY yue2_infer-0.1.5-py3-none-any.whl .
+RUN pip install --no-cache-dir ./yue2_infer-0.1.5-py3-none-any.whl
 
-COPY . .
+COPY main.py .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+ENV HF_HOME=/tmp/hf
+
+EXPOSE 8080
+CMD ["uvicorn","main:app","--host","0.0.0.0","--port","8080"]
