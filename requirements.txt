@@ -1,7 +1,10 @@
 fastapi
 uvicorn
 torch
-transformers
+torchaudio
+transformers>=4.40.0
 huggingface-hub
 soundfile
+tiktoken
 requests
+git+https://github.com/m-a-p/YuE.git
